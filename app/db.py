@@ -73,6 +73,33 @@ CREATE TABLE IF NOT EXISTS corporate_actions (
 
 CREATE INDEX IF NOT EXISTS idx_actions_sec_exdate
     ON corporate_actions (security_code, ex_date);
+
+-- 等权指数发布：每次发布生成一版，发布号自增。
+-- 交易日、成分安排与截止批次在发布时定格（JSON 原文存档），此后不可变；
+-- 行情/公告的后续补报对本版不可见（计算只取 ingest_batch_id <= cutoff_batch_id）。
+CREATE TABLE IF NOT EXISTS index_publications (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    index_code           TEXT NOT NULL,
+    name                 TEXT,
+    trade_dates          TEXT NOT NULL,           -- JSON 数组，有序交易日
+    initial_constituents TEXT NOT NULL,           -- JSON 数组，首期成分
+    rebalances           TEXT NOT NULL,           -- JSON 数组 [{trade_date, constituents}]
+    cutoff_batch_id      INTEGER NOT NULL REFERENCES ingest_batches(id),
+    status               TEXT NOT NULL CHECK (status IN ('complete', 'partial')),
+    first_broken_date    TEXT,                    -- 首个算不出的交易日（partial 时）
+    missing_quotes       TEXT,                    -- JSON 数组 [{security_code, missing_dates}]
+    last_published_date  TEXT NOT NULL,           -- 最后一个有点位的交易日
+    point_count          INTEGER NOT NULL,
+    created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 已发布点位：断点前的逐日点位，子段查询直接切片，保证与全段一致
+CREATE TABLE IF NOT EXISTS index_points (
+    publication_id INTEGER NOT NULL REFERENCES index_publications(id),
+    trade_date     TEXT NOT NULL,
+    level          REAL NOT NULL,
+    PRIMARY KEY (publication_id, trade_date)
+);
 """
 
 

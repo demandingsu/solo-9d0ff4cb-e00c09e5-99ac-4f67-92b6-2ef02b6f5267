@@ -148,3 +148,114 @@ class BatchOut(BaseModel):
     payload_kind: Literal["quotes", "corporate_actions"]
     row_count: int
     imported_at: str
+
+
+# ---------- 等权指数发布 ----------
+
+
+class RebalanceIn(BaseModel):
+    """一次换篮：在指定交易日收盘后生效，下一交易日起按新篮子计算。"""
+
+    trade_date: str = Field(..., description="换篮交易日 YYYY-MM-DD（当日收盘后生效）")
+    constituents: list[str] = Field(
+        ..., min_length=1, description="新篮子成分证券代码（非空、不重复）"
+    )
+
+    @field_validator("trade_date")
+    @classmethod
+    def _check_date(cls, v: str) -> str:
+        from datetime import date
+
+        date.fromisoformat(v)
+        return v
+
+
+class IndexPublishRequest(BaseModel):
+    """发布一版等权指数：交易日、成分安排与截止批次在发布时定格。"""
+
+    index_code: str = Field(..., min_length=1, description="指数代码（标签，可多次发版）")
+    name: str | None = Field(default=None, description="指数名称")
+    trade_dates: list[str] = Field(
+        ..., min_length=1, description="有序交易日列表（严格递增，首日定 100 点）"
+    )
+    initial_constituents: list[str] = Field(
+        ..., min_length=1, description="首期成分证券代码（非空、不重复）"
+    )
+    rebalances: list[RebalanceIn] = Field(
+        default_factory=list, description="换篮安排（换篮日收盘后生效）"
+    )
+    cutoff_batch: int | None = Field(
+        default=None,
+        description="入库截止批次；缺省=发布时最新已提交批次，定格进本版",
+    )
+
+    @field_validator("trade_dates")
+    @classmethod
+    def _check_dates(cls, v: list[str]) -> list[str]:
+        from datetime import date
+
+        for d in v:
+            date.fromisoformat(d)
+        return v
+
+
+class MissingQuote(BaseModel):
+    """断点处某成分缺失的收盘价（报价日期为前一交易日和/或当日）。"""
+
+    security_code: str
+    missing_dates: list[str] = Field(..., description="缺价的报价日期（YYYY-MM-DD）")
+
+
+class IndexBreakInfo(BaseModel):
+    """断点信息：首个算不出的交易日与缺价明细。"""
+
+    first_broken_date: str = Field(..., description="首个算不出点位的交易日")
+    missing: list[MissingQuote] = Field(..., description="缺价的证券与报价日期")
+
+
+class IndexPublicationOut(BaseModel):
+    publication_id: int = Field(..., description="发布号（自增，回查凭据）")
+    index_code: str
+    name: str | None
+    cutoff_batch_id: int = Field(..., description="本版定格的入库截止批次")
+    status: Literal["complete", "partial"] = Field(
+        ..., description="complete=全段可算；partial=缺价截断，只发布断点前点位"
+    )
+    first_trade_date: str
+    last_published_date: str = Field(..., description="最后一个有点位的交易日")
+    point_count: int = Field(..., description="已发布点位数（含首日 100 点）")
+    break_info: IndexBreakInfo | None = Field(
+        default=None, description="断点信息（仅 partial 时给出）"
+    )
+    created_at: str
+
+
+class RebalanceOut(BaseModel):
+    trade_date: str
+    constituents: list[str]
+
+
+class IndexPublicationDetail(IndexPublicationOut):
+    """发布详情：定格的交易日、成分安排原样回查。"""
+
+    trade_dates: list[str]
+    initial_constituents: list[str]
+    rebalances: list[RebalanceOut]
+
+
+class IndexPointOut(BaseModel):
+    trade_date: str
+    level: float = Field(..., description="指数点位（首日 100，5 位小数）")
+
+
+class IndexPointsResponse(BaseModel):
+    """点位子段：与全段同一份已发布数据，任意子段点位一致。"""
+
+    publication_id: int
+    index_code: str
+    cutoff_batch_id: int
+    status: Literal["complete", "partial"]
+    start_date: str = Field(..., description="实际返回的区间起日")
+    end_date: str = Field(..., description="实际返回的区间末日")
+    points: list[IndexPointOut]
+    break_info: IndexBreakInfo | None = None

@@ -11,13 +11,17 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 
-from . import db, services
+from . import db, indexes, services
 from .models import (
     AdjustedQuote,
     BatchOut,
     CorporateActionImportRequest,
     CorporateActionOut,
     ImportResponse,
+    IndexPointsResponse,
+    IndexPublicationDetail,
+    IndexPublicationOut,
+    IndexPublishRequest,
     QuoteImportRequest,
     RawQuote,
 )
@@ -31,11 +35,13 @@ def create_app() -> FastAPI:
         yield
 
     app = FastAPI(
-        title="拆股复权行情 API",
-        version="1.0.0",
+        title="拆股复权行情与等权指数 API",
+        version="1.1.0",
         description=(
             "版本化日行情与拆股/并股公告导入，按入库截止批次返回"
-            "前后可比的复权价量。**后来补报的公告不会改写旧批次结果。**"
+            "前后可比的复权价量；并可发布等权指数：交易日、成分安排与"
+            "截止批次在发布时定格，缺价只发布断点前点位，补齐后另发新版，"
+            "**旧版与旧批次结果不会被后来补报改写。**"
         ),
         lifespan=lifespan,
     )
@@ -144,6 +150,57 @@ def create_app() -> FastAPI:
         cutoff_batch: int | None = Query(None),
     ) -> list[CorporateActionOut]:
         return services.query_actions(security_code, cutoff_batch)
+
+    # ---------- 等权指数 ----------
+
+    @app.post(
+        "/index/publications",
+        response_model=IndexPublicationOut,
+        status_code=201,
+        tags=["指数"],
+        summary="发布一版等权指数（定格交易日、成分安排与截止批次）",
+        description=(
+            "提交 请求体含有序交易日、首期成分与换篮安排（换篮日收盘后生效）。"
+            "首日定 100 点；此后每个交易日以当日为基准日复权，取当期成分"
+            "前一交易日收盘到当日收盘的收益率，等权平均后更新上一点位。"
+            "行情与公告只取截至 cutoff_batch（缺省=发布时最新批次）已提交的数据。"
+            "缺收盘价时只发布断点前点位，并返回首个算不出的交易日、缺价证券与报价日期；"
+            "补齐后再次发布即得新版，旧版原样保留。"
+        ),
+    )
+    def publish_index(req: IndexPublishRequest) -> IndexPublicationOut:
+        return indexes.publish_index(req)
+
+    @app.get(
+        "/index/publications",
+        response_model=list[IndexPublicationOut],
+        tags=["指数"],
+        summary="列出全部指数发布（含状态与断点信息）",
+    )
+    def list_publications() -> list[IndexPublicationOut]:
+        return indexes.list_publications()
+
+    @app.get(
+        "/index/publications/{publication_id}",
+        response_model=IndexPublicationDetail,
+        tags=["指数"],
+        summary="发布详情：定格的交易日、成分安排、截止批次与断点信息",
+    )
+    def get_publication(publication_id: int) -> IndexPublicationDetail:
+        return indexes.get_publication(publication_id)
+
+    @app.get(
+        "/index/publications/{publication_id}/points",
+        response_model=IndexPointsResponse,
+        tags=["指数"],
+        summary="按发布号回查点位（可给 start_date/end_date 取任意子段，与全段一致）",
+    )
+    def get_points(
+        publication_id: int,
+        start_date: str | None = Query(None, description="子段起日 YYYY-MM-DD"),
+        end_date: str | None = Query(None, description="子段末日 YYYY-MM-DD"),
+    ) -> IndexPointsResponse:
+        return indexes.get_points(publication_id, start_date, end_date)
 
     return app
 
